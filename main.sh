@@ -1,245 +1,4 @@
-# Настройка и создание SWAP файла
-setup_swap() {
-    log_info "Проверка и настройка SWAP-файла..."
-    
-    # Проверка наличия SWAP
-    local swap_total=$(free -m | awk '/^Swap:/ {print $2}')
-    
-    if [ "$swap_total" -gt 0 ]; then
-        log_info "SWAP уже настроен (${swap_total}MB). Пропускаем создание."
-        return 0
-    fi
-    
-    # Определяем размер SWAP файла в зависимости от RAM
-    local ram_total=$(free -m | awk '/^Mem:/ {print $2}')
-    local swap_size=0
-    
-    if [ "$ram_total" -le 2048 ]; then
-        # Для серверов с RAM до 2GB используем swap = 2 * RAM
-        swap_size=$((ram_total * 2))
-    elif [ "$ram_total" -le 8192 ]; then
-        # Для серверов с RAM от 2GB до 8GB используем swap = 1 * RAM
-        swap_size=$ram_total
-    else
-        # Для серверов с RAM более 8GB используем 4GB swap
-        swap_size=4096
-    fi
-    
-    log_info "Создание SWAP-файла размером ${swap_size}MB..."
-    
-    # Создание swap файла
-    local swap_file="/swapfile"
-    
-    # Создаем файл заданного размера
-    dd if=/dev/zero of=$swap_file bs=1M count=$swap_size status=progress
-    
-    # Задаем права доступа
-    chmod 600 $swap_file
-    
-    # Настраиваем как swap
-    mkswap $swap_file
-    
-    # Включаем swap
-    swapon $swap_file
-    
-    # Добавляем в fstab для автоматического монтирования при загрузке
-    if ! grep -q "^$swap_file " /etc/fstab; then
-        echo "$swap_file none swap sw 0 0" >> /etc/fstab
-    fi
-    
-    # Настройка параметров использования swap (значение 10 означает, что swap будет использоваться только когда RAM заполнена на 90%)
-    echo "vm.swappiness=10" > /etc/sysctl.d/99-swappiness.conf
-    sysctl -p /etc/sysctl.d/99-swappiness.conf
-    
-    log_info "SWAP-файл успешно создан и настроен (${swap_size}MB)"
-}# Создание systemd-сервиса для Telegram-бота
-create_telegram_bot_service() {
-    log_info "Создание systemd-сервиса для Telegram-бота..."
-    
-    cat > /etc/systemd/system/wg-telegram-bot.service << EOF
-[Unit]
-Description=WireGuard Telegram Bot
-After=docker.service
-Requires=docker.service
-
-[Service]
-Type=simple
-User=root
-Group=root
-WorkingDirectory=$TELEGRAM_SCRIPT_DIR
-ExecStart=$TELEGRAM_SCRIPT_DIR/wg-telegram-bot.sh
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    # Перезагрузка systemd для обнаружения нового сервиса
-    systemctl daemon-reload
-    
-    log_info "Systemd-сервис для Telegram-бота создан"
-}
-
-# Запуск Telegram-бота
-start_telegram_bot() {
-    log_info "Запуск Telegram-бота..."
-    
-    # Включение и запуск сервиса
-    systemctl enable wg-telegram-bot.service
-    systemctl start wg-telegram-bot.service
-    
-    if systemctl is-active --quiet wg-telegram-bot.service; then
-        log_info "Telegram-бот успешно запущен"
-    else
-        log_error "Не удалось запустить Telegram-бота"
-        log_info "Проверьте статус сервиса: systemctl status wg-telegram-bot.service"
-    fi
-}
-
-# Настройка загрузочных модулей для WireGuard на Debian 12
-setup_wireguard_modules() {
-    log_info "Настройка загрузочных модулей для WireGuard..."
-    
-    # Проверка наличия модуля WireGuard
-    if ! lsmod | grep -q wireguard; then
-        log_info "Модуль WireGuard не загружен. Загрузка модуля..."
-        
-        # Установка пакета wireguard если требуется
-        if ! command -v wg &> /dev/null; then
-            log_info "Установка пакета wireguard..."
-            apt-get update
-            apt-get install -y wireguard
-        fi
-        
-        # Загрузка модуля
-        modprobe wireguard
-        
-        # Добавление модуля в автозагрузку
-        echo "wireguard" > /etc/modules-load.d/wireguard.conf
-    fi
-    
-    log_info "Модуль WireGuard настроен"
-}
-
-# Настройка дополнительных параметров ядра
-setup_kernel_parameters() {
-    log_info "Настройка параметров ядра для WireGuard..."
-    
-    # Включение IP-форвардинга
-    echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-wireguard.conf
-    echo "net.ipv6.conf.all.forwarding = 1" >> /etc/sysctl.d/99-wireguard.conf
-    
-    # Применение параметров
-    sysctl -p /etc/sysctl.d/99-wireguard.conf
-    
-    log_info "Параметры ядра настроены"
-}
-
-# Функция для проверки наличия необходимых аргументов
-check_telegram_config() {
-    if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
-        log_error "Не указан токен Telegram-бота (TELEGRAM_BOT_TOKEN)"
-        log_info "Получите токен у @BotFather в Telegram и укажите его в файле .env"
-        exit 1
-    fi
-    
-    if [ -z "$TELEGRAM_ADMIN_IDS" ]; then
-        log_error "Не указаны ID администраторов (TELEGRAM_ADMIN_IDS)"
-        log_info "Укажите ID администраторов через запятую в файле .env"
-        log_info "Чтобы узнать свой ID, напишите боту @userinfobot в Telegram"
-        exit 1
-    fi
-}
-
-# Создание примера файла .env
-create_env_file_example() {
-    local env_example_file="./env.example"
-    
-    log_info "Создание примера файла .env: $env_example_file"
-    
-    cat > "$env_example_file" << EOF
-# Конфигурация директорий
-BASE_DIR=$BASE_DIR
-WG_CONFIG_DIR=$WG_CONFIG_DIR
-WG_COMPOSE_DIR=$WG_COMPOSE_DIR
-TELEGRAM_SCRIPT_DIR=$TELEGRAM_SCRIPT_DIR
-TELEGRAM_LOG_FILE=$TELEGRAM_LOG_FILE
-
-# Конфигурация WireGuard
-WG_CONTAINER_NAME=$WG_CONTAINER_NAME
-WG_PORT=$WG_PORT
-WG_INTERNAL_SUBNET=$WG_INTERNAL_SUBNET
-# Оставьте пустым для автоопределения или укажите ваш домен/IP
-WG_SERVER_URL=$WG_SERVER_URL
-
-# Конфигурация Telegram-бота
-# Получите токен у @BotFather
-TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
-# Укажите ID администраторов через запятую (узнать ID можно у @userinfobot)
-TELEGRAM_ADMIN_IDS=$TELEGRAM_ADMIN_IDS
-EOF
-    
-    log_info "Пример файла .env создан"
-}
-
-# Основная функция
-main() {
-    echo -e "${GREEN}=== Установка и настройка WireGuard с Telegram-ботом ===${NC}"
-    
-    # Проверка прав root
-    if [ "$(id -u)" -ne 0 ]; then
-        log_error "Этот скрипт должен быть запущен с правами root"
-        exit 1
-    fi
-    
-    # Загрузка переменных из файла .env
-    load_env_file
-    
-    # Создание примера файла .env
-    create_env_file_example
-    
-    # Проверка конфигурации Telegram
-    check_telegram_config
-    
-    # Проверка необходимых компонентов
-    check_requirements
-    
-    # Настройка SWAP
-    setup_swap
-    
-    # Настройка директорий
-    setup_directories
-    
-    # Настройка загрузочных модулей для WireGuard
-    setup_wireguard_modules
-    
-    # Настройка параметров ядра
-    setup_kernel_parameters
-    
-    # Настройка WireGuard в Docker
-    setup_wireguard_docker
-    
-    # Создание скрипта Telegram-бота
-    create_telegram_bot_script
-    
-    # Создание systemd-сервиса для Telegram-бота
-    create_telegram_bot_service
-    
-    # Запуск Telegram-бота
-    start_telegram_bot
-    
-    log_info "Установка и настройка завершены успешно!"
-    log_info "WireGuard доступен на порту: $WG_PORT/UDP"
-    log_info "Конфигурация WireGuard находится в: $WG_CONFIG_DIR"
-    log_info "Docker Compose файл находится в: $WG_COMPOSE_DIR/docker-compose.yml"
-    log_info "Telegram-бот запущен, проверьте: systemctl status wg-telegram-bot.service"
-    log_info "Конфигурация загружена из файла .env"
-    log_info "Для изменения настроек отредактируйте файл .env и перезапустите установку"
-}
-
-# Запуск основной функции
-main "$@"#!/bin/bash
+#!/bin/bash
 
 # Скрипт для настройки WireGuard в Docker Compose и Telegram-бота для управления пирами
 # Author: Claude
@@ -433,6 +192,62 @@ setup_directories() {
     log_info "Структура директорий создана"
 }
 
+# Настройка и создание SWAP файла
+setup_swap() {
+    log_info "Проверка и настройка SWAP-файла..."
+    
+    # Проверка наличия SWAP
+    local swap_total=$(free -m | awk '/^Swap:/ {print $2}')
+    
+    if [ "$swap_total" -gt 0 ]; then
+        log_info "SWAP уже настроен (${swap_total}MB). Пропускаем создание."
+        return 0
+    fi
+    
+    # Определяем размер SWAP файла в зависимости от RAM
+    local ram_total=$(free -m | awk '/^Mem:/ {print $2}')
+    local swap_size=0
+    
+    if [ "$ram_total" -le 2048 ]; then
+        # Для серверов с RAM до 2GB используем swap = 2 * RAM
+        swap_size=$((ram_total * 2))
+    elif [ "$ram_total" -le 8192 ]; then
+        # Для серверов с RAM от 2GB до 8GB используем swap = 1 * RAM
+        swap_size=$ram_total
+    else
+        # Для серверов с RAM более 8GB используем 4GB swap
+        swap_size=4096
+    fi
+    
+    log_info "Создание SWAP-файла размером ${swap_size}MB..."
+    
+    # Создание swap файла
+    local swap_file="/swapfile"
+    
+    # Создаем файл заданного размера
+    dd if=/dev/zero of=$swap_file bs=1M count=$swap_size status=progress
+    
+    # Задаем права доступа
+    chmod 600 $swap_file
+    
+    # Настраиваем как swap
+    mkswap $swap_file
+    
+    # Включаем swap
+    swapon $swap_file
+    
+    # Добавляем в fstab для автоматического монтирования при загрузке
+    if ! grep -q "^$swap_file " /etc/fstab; then
+        echo "$swap_file none swap sw 0 0" >> /etc/fstab
+    fi
+    
+    # Настройка параметров использования swap (значение 10 означает, что swap будет использоваться только когда RAM заполнена на 90%)
+    echo "vm.swappiness=10" > /etc/sysctl.d/99-swappiness.conf
+    sysctl -p /etc/sysctl.d/99-swappiness.conf
+    
+    log_info "SWAP-файл успешно создан и настроен (${swap_size}MB)"
+}
+
 # Создание Docker Compose файла для WireGuard
 create_docker_compose_file() {
     log_info "Создание Docker Compose файла для WireGuard..."
@@ -444,31 +259,6 @@ create_docker_compose_file() {
     
     # Создание файла docker-compose.yml
     cat > "$WG_COMPOSE_DIR/docker-compose.yml" << EOF
-    
-    chmod +x "$TELEGRAM_SCRIPT_DIR/wg-telegram-bot.sh"
-    
-    # Создание файла конфигурации для бота
-    cat > "$TELEGRAM_SCRIPT_DIR/config.sh" << EOF
-#!/bin/bash
-
-# Конфигурация WireGuard Telegram-бота
-
-# Токен Telegram-бота
-BOT_TOKEN="$TELEGRAM_BOT_TOKEN"
-
-# ID администраторов (через запятую)
-ADMIN_IDS="$TELEGRAM_ADMIN_IDS"
-
-# Имя контейнера WireGuard
-CONTAINER_NAME="$WG_CONTAINER_NAME"
-
-# Путь к файлу журнала
-LOG_FILE="$TELEGRAM_LOG_FILE"
-EOF
-    
-    chmod +x "$TELEGRAM_SCRIPT_DIR/config.sh"
-    
-    log_info "Скрипты Telegram-бота созданы"
 version: '3'
 
 services:
@@ -907,3 +697,219 @@ main() {
 
 # Запуск главного цикла
 main
+EOF
+    
+    chmod +x "$TELEGRAM_SCRIPT_DIR/wg-telegram-bot.sh"
+    
+    # Создание файла конфигурации для бота
+    cat > "$TELEGRAM_SCRIPT_DIR/config.sh" << EOF
+#!/bin/bash
+
+# Конфигурация WireGuard Telegram-бота
+
+# Токен Telegram-бота
+BOT_TOKEN="$TELEGRAM_BOT_TOKEN"
+
+# ID администраторов (через запятую)
+ADMIN_IDS="$TELEGRAM_ADMIN_IDS"
+
+# Имя контейнера WireGuard
+CONTAINER_NAME="$WG_CONTAINER_NAME"
+
+# Путь к файлу журнала
+LOG_FILE="$TELEGRAM_LOG_FILE"
+EOF
+    
+    chmod +x "$TELEGRAM_SCRIPT_DIR/config.sh"
+    
+    log_info "Скрипты Telegram-бота созданы"
+}
+
+# Создание systemd-сервиса для Telegram-бота
+create_telegram_bot_service() {
+    log_info "Создание systemd-сервиса для Telegram-бота..."
+    
+    cat > /etc/systemd/system/wg-telegram-bot.service << EOF
+[Unit]
+Description=WireGuard Telegram Bot
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=$TELEGRAM_SCRIPT_DIR
+ExecStart=$TELEGRAM_SCRIPT_DIR/wg-telegram-bot.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Перезагрузка systemd для обнаружения нового сервиса
+    systemctl daemon-reload
+    
+    log_info "Systemd-сервис для Telegram-бота создан"
+}
+
+# Запуск Telegram-бота
+start_telegram_bot() {
+    log_info "Запуск Telegram-бота..."
+    
+    # Включение и запуск сервиса
+    systemctl enable wg-telegram-bot.service
+    systemctl start wg-telegram-bot.service
+    
+    if systemctl is-active --quiet wg-telegram-bot.service; then
+        log_info "Telegram-бот успешно запущен"
+    else
+        log_error "Не удалось запустить Telegram-бота"
+        log_info "Проверьте статус сервиса: systemctl status wg-telegram-bot.service"
+    fi
+}
+
+# Настройка загрузочных модулей для WireGuard на Debian 12
+setup_wireguard_modules() {
+    log_info "Настройка загрузочных модулей для WireGuard..."
+    
+    # Проверка наличия модуля WireGuard
+    if ! lsmod | grep -q wireguard; then
+        log_info "Модуль WireGuard не загружен. Загрузка модуля..."
+        
+        # Установка пакета wireguard если требуется
+        if ! command -v wg &> /dev/null; then
+            log_info "Установка пакета wireguard..."
+            apt-get update
+            apt-get install -y wireguard
+        fi
+        
+        # Загрузка модуля
+        modprobe wireguard
+        
+        # Добавление модуля в автозагрузку
+        echo "wireguard" > /etc/modules-load.d/wireguard.conf
+    fi
+    
+    log_info "Модуль WireGuard настроен"
+}
+
+# Настройка дополнительных параметров ядра
+setup_kernel_parameters() {
+    log_info "Настройка параметров ядра для WireGuard..."
+    
+    # Включение IP-форвардинга
+    echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-wireguard.conf
+    echo "net.ipv6.conf.all.forwarding = 1" >> /etc/sysctl.d/99-wireguard.conf
+    
+    # Применение параметров
+    sysctl -p /etc/sysctl.d/99-wireguard.conf
+    
+    log_info "Параметры ядра настроены"
+}
+
+# Функция для проверки наличия необходимых аргументов
+check_telegram_config() {
+    if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+        log_error "Не указан токен Telegram-бота (TELEGRAM_BOT_TOKEN)"
+        log_info "Получите токен у @BotFather в Telegram и укажите его в файле .env"
+        exit 1
+    fi
+    
+    if [ -z "$TELEGRAM_ADMIN_IDS" ]; then
+        log_error "Не указаны ID администраторов (TELEGRAM_ADMIN_IDS)"
+        log_info "Укажите ID администраторов через запятую в файле .env"
+        log_info "Чтобы узнать свой ID, напишите боту @userinfobot в Telegram"
+        exit 1
+    fi
+}
+
+# Создание примера файла .env
+create_env_file_example() {
+    local env_example_file="./env.example"
+    
+    log_info "Создание примера файла .env: $env_example_file"
+    
+    cat > "$env_example_file" << EOF
+# Конфигурация директорий
+BASE_DIR=$BASE_DIR
+WG_CONFIG_DIR=$WG_CONFIG_DIR
+WG_COMPOSE_DIR=$WG_COMPOSE_DIR
+TELEGRAM_SCRIPT_DIR=$TELEGRAM_SCRIPT_DIR
+TELEGRAM_LOG_FILE=$TELEGRAM_LOG_FILE
+
+# Конфигурация WireGuard
+WG_CONTAINER_NAME=$WG_CONTAINER_NAME
+WG_PORT=$WG_PORT
+WG_INTERNAL_SUBNET=$WG_INTERNAL_SUBNET
+# Оставьте пустым для автоопределения или укажите ваш домен/IP
+WG_SERVER_URL=$WG_SERVER_URL
+
+# Конфигурация Telegram-бота
+# Получите токен у @BotFather
+TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
+# Укажите ID администраторов через запятую (узнать ID можно у @userinfobot)
+TELEGRAM_ADMIN_IDS=$TELEGRAM_ADMIN_IDS
+EOF
+    
+    log_info "Пример файла .env создан"
+}
+
+# Основная функция
+main() {
+    echo -e "${GREEN}=== Установка и настройка WireGuard с Telegram-ботом ===${NC}"
+    
+    # Проверка прав root
+    if [ "$(id -u)" -ne 0 ]; then
+        log_error "Этот скрипт должен быть запущен с правами root"
+        exit 1
+    fi
+    
+    # Загрузка переменных из файла .env
+    load_env_file
+    
+    # Создание примера файла .env
+    create_env_file_example
+    
+    # Проверка конфигурации Telegram
+    check_telegram_config
+    
+    # Проверка необходимых компонентов
+    check_requirements
+    
+    # Настройка SWAP
+    setup_swap
+    
+    # Настройка директорий
+    setup_directories
+    
+    # Настройка загрузочных модулей для WireGuard
+    setup_wireguard_modules
+    
+    # Настройка параметров ядра
+    setup_kernel_parameters
+    
+    # Настройка WireGuard в Docker
+    setup_wireguard_docker
+    
+    # Создание скрипта Telegram-бота
+    create_telegram_bot_script
+    
+    # Создание systemd-сервиса для Telegram-бота
+    create_telegram_bot_service
+    
+    # Запуск Telegram-бота
+    start_telegram_bot
+    
+    log_info "Установка и настройка завершены успешно!"
+    log_info "WireGuard доступен на порту: $WG_PORT/UDP"
+    log_info "Конфигурация WireGuard находится в: $WG_CONFIG_DIR"
+    log_info "Docker Compose файл находится в: $WG_COMPOSE_DIR/docker-compose.yml"
+    log_info "Telegram-бот запущен, проверьте: systemctl status wg-telegram-bot.service"
+    log_info "Конфигурация загружена из файла .env"
+    log_info "Для изменения настроек отредактируйте файл .env и перезапустите установку"
+}
+
+# Запуск основной функции
+main "$@"
