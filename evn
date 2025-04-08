@@ -1,0 +1,25 @@
+# Конфигурация директорий
+# необходимо перемиеновать файл в .env 
+
+
+# ----------- заполнить -----------
+# Оставьте пустым для автоопределения или укажите ваш домен/IP
+WG_SERVER_URL= ваш ip сервера
+# Получите токен у @BotFather
+TELEGRAM_BOT_TOKEN= ваш токен
+# Укажите ID администраторов через запятую (узнать ID можно у @userinfobot)
+TELEGRAM_ADMIN_IDS= ID админа 
+
+
+# -------------Оставить как есть--------------
+
+BASE_DIR=/opt/wireguard
+WG_CONFIG_DIR=/opt/wireguard/config
+WG_COMPOSE_DIR=/opt/wireguard/compose
+TELEGRAM_SCRIPT_DIR=/opt/wireguard/telegram-bot
+TELEGRAM_LOG_FILE=/var/log/wg-telegram-bot.log
+
+# Конфигурация WireGuard
+WG_CONTAINER_NAME=wireguard
+WG_PORT=51820
+WG_INTERNAL_SUBNET=10.13.13.0
