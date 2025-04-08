@@ -39,8 +39,8 @@
 
 2. Клонируйте репозиторий с установочными скриптами:
    ```bash
-   git clone https://github.com/username/wireguard-telegram-bot.git
-   cd wireguard-telegram-bot
+   git clone https://github.com/FrankX3M/wglite2_tg.git
+   cd wglite2_tg
    ```
 
 ## Шаг 4: Настройка файла конфигурации
